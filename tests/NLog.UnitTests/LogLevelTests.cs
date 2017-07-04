@@ -74,6 +74,74 @@ namespace NLog.UnitTests
 
         [Fact]
         [Trait("Component", "Core")]
+        public void OrdinalNullTest()
+        {
+            Assert.False(null < LogLevel.Debug);
+            Assert.False(null < LogLevel.Info);
+            Assert.False(null < LogLevel.Warn);
+            Assert.False(null < LogLevel.Error);
+            Assert.False(null < LogLevel.Fatal);
+            Assert.False(null < LogLevel.Off);
+
+            Assert.False(null > LogLevel.Debug);
+            Assert.False(null > LogLevel.Info);
+            Assert.False(null > LogLevel.Warn);
+            Assert.False(null > LogLevel.Error);
+            Assert.False(null > LogLevel.Fatal);
+            Assert.False(null > LogLevel.Off);
+
+            Assert.False(null <= LogLevel.Debug);
+            Assert.False(null <= LogLevel.Info);
+            Assert.False(null <= LogLevel.Warn);
+            Assert.False(null <= LogLevel.Error);
+            Assert.False(null <= LogLevel.Fatal);
+            Assert.False(null <= LogLevel.Off);
+
+            Assert.False(null >= LogLevel.Debug);
+            Assert.False(null >= LogLevel.Info);
+            Assert.False(null >= LogLevel.Warn);
+            Assert.False(null >= LogLevel.Error);
+            Assert.False(null >= LogLevel.Fatal);
+            Assert.False(null >= LogLevel.Off);
+
+
+            Assert.False(LogLevel.Trace < null);
+            Assert.False(LogLevel.Debug < null);
+            Assert.False(LogLevel.Info < null);
+            Assert.False(LogLevel.Warn < null);
+            Assert.False(LogLevel.Error < null);
+            Assert.False(LogLevel.Fatal < null);
+            Assert.False(LogLevel.Trace > null);
+            Assert.False(LogLevel.Debug > null);
+            Assert.False(LogLevel.Info > null);
+            Assert.False(LogLevel.Warn > null);
+            Assert.False(LogLevel.Error > null);
+            Assert.False(LogLevel.Fatal > null);
+            Assert.False(LogLevel.Trace <= null);
+            Assert.False(LogLevel.Debug <= null);
+            Assert.False(LogLevel.Info <= null);
+            Assert.False(LogLevel.Warn <= null); ;
+            Assert.False(LogLevel.Error <= null);
+            Assert.False(LogLevel.Fatal <= null);
+            Assert.False(LogLevel.Trace >= null);
+            Assert.False(LogLevel.Debug >= null);
+            Assert.False(LogLevel.Info >= null);
+            Assert.False(LogLevel.Warn >= null);
+            Assert.False(LogLevel.Error >= null);
+            Assert.False(LogLevel.Fatal >= null);
+
+
+            Assert.False((LogLevel)null < null);
+            Assert.False((LogLevel)null > null);
+            Assert.True((LogLevel)null <= null);
+            Assert.True((LogLevel)null >= null);
+            Assert.True((LogLevel)null == null);
+
+
+        }
+
+        [Fact]
+        [Trait("Component", "Core")]
         public void LogLevelEqualityTest()
         {
             LogLevel levelTrace = LogLevel.Trace;
@@ -91,7 +159,7 @@ namespace NLog.UnitTests
         [Fact]
         [Trait("Component", "Core")]
         public void LogLevelFromOrdinal_InputInRange_ExpectValidLevel()
-        { 
+        {
             Assert.Same(LogLevel.FromOrdinal(0), LogLevel.Trace);
             Assert.Same(LogLevel.FromOrdinal(1), LogLevel.Debug);
             Assert.Same(LogLevel.FromOrdinal(2), LogLevel.Info);
@@ -198,7 +266,7 @@ namespace NLog.UnitTests
 
             LogLevel levelMin = LogLevel.MinLevel;
             LogLevel levelMax = LogLevel.MaxLevel;
-          
+
             Assert.Equal(LogLevel.Trace.CompareTo(levelDebug), -1);
             Assert.Equal(LogLevel.Debug.CompareTo(levelInfo), -1);
             Assert.Equal(LogLevel.Info.CompareTo(levelWarn), -1);
@@ -243,7 +311,7 @@ namespace NLog.UnitTests
         {
             Assert.Throws<ArgumentNullException>(() => LogLevel.MinLevel.CompareTo(null));
             Assert.Throws<ArgumentNullException>(() => LogLevel.MaxLevel.CompareTo(null));
-            
+
             Assert.Throws<ArgumentNullException>(() => LogLevel.Debug.CompareTo(null));
         }
 
@@ -251,8 +319,8 @@ namespace NLog.UnitTests
         [Trait("Component", "Core")]
         public void LogLevel_MinMaxLevels_ExpectConstantValues()
         {
-            Assert.Same(LogLevel.Trace, LogLevel.MinLevel); 
-            Assert.Same(LogLevel.Fatal, LogLevel.MaxLevel); 
+            Assert.Same(LogLevel.Trace, LogLevel.MinLevel);
+            Assert.Same(LogLevel.Fatal, LogLevel.MaxLevel);
         }
 
         [Fact]
@@ -285,7 +353,7 @@ namespace NLog.UnitTests
         public void LogLevelEqual_TypeOfObject()
         {
             // Objects of any other type should always return false.
-            Assert.False(LogLevel.Debug.Equals((int) 1));
+            Assert.False(LogLevel.Debug.Equals((int)1));
             Assert.False(LogLevel.Debug.Equals((string)"Debug"));
 
             // Valid LogLevel objects boxed as Object type.
@@ -329,7 +397,7 @@ namespace NLog.UnitTests
         [Fact]
         public void LogLevel_SetAllLevels()
         {
-            Assert.Throws<NotSupportedException>(() => ((ICollection<LogLevel>) LogLevel.AllLevels).Add(LogLevel.Fatal));
+            Assert.Throws<NotSupportedException>(() => ((ICollection<LogLevel>)LogLevel.AllLevels).Add(LogLevel.Fatal));
         }
 
         [Fact]
