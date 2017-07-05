@@ -35,7 +35,7 @@ namespace NLog.Targets
 {
     using System;
     using System.Collections.Generic;
-    using System.Threading;
+    using System.Linq;
 
     using NLog.Common;
     using NLog.Config;
@@ -48,16 +48,31 @@ namespace NLog.Targets
     [NLogConfigurationItem]
     public abstract class Target : ISupportsInitialize, IDisposable
     {
-        private object lockObject = new object();
+        private readonly object lockObject = new object();
         private List<Layout> allLayouts;
+        
+        /// <summary> Are all layouts in this target thread-agnostic, if so we don't precalculate the layouts </summary>
+        private bool allLayoutsAreThreadAgnostic;
         private bool scannedForLayouts;
         private Exception initializeException;
+
+        /// <summary>
+        /// The Max StackTraceUsage of all the <see cref="Layout"/> in this Target
+        /// </summary>
+        internal StackTraceUsage StackTraceUsage { get; private set; }
 
         /// <summary>
         /// Gets or sets the name of the target.
         /// </summary>
         /// <docgen category='General Options' order='10' />
         public string Name { get; set; }
+
+        /// <summary>
+        /// Target supports reuse of internal buffers, and doesn't have to constantly allocate new buffers
+        /// Required for legacy NLog-targets, that expects buffers to remain stable after Write-method exit
+        /// </summary>
+        /// <docgen category='Performance Tuning Options' order='10' />
+        public bool OptimizeBufferReuse { get; set; }
 
         /// <summary>
         /// Gets the object which can be used to synchronize asynchronous operations that must rely on the .
@@ -75,21 +90,26 @@ namespace NLog.Targets
         /// <summary>
         /// Gets a value indicating whether the target has been initialized.
         /// </summary>
-        protected bool IsInitialized { get; private set; }
+        protected bool IsInitialized
+        {
+            get
+            {
+                if (this.isInitialized)
+                    return true;    // Initialization has completed
+
+                // Lets wait for initialization to complete, and then check again
+                lock (this.SyncRoot)
+                {
+                    return this.isInitialized;
+                }
+            }
+        }
+        private volatile bool isInitialized;
 
         /// <summary>
-        /// Get all used layouts in this target.
+        /// Can be used if <see cref="OptimizeBufferReuse"/> has been enabled.
         /// </summary>
-        /// <returns></returns>
-        internal List<Layout> GetAllLayouts()
-        {
-
-            if (!scannedForLayouts)
-            {
-                FindAllLayouts();
-            }
-            return allLayouts;
-        }
+        internal readonly ReusableBuilderCreator ReusableLayoutBuilder = new ReusableBuilderCreator();
 
         /// <summary>
         /// Initializes this instance.
@@ -97,7 +117,15 @@ namespace NLog.Targets
         /// <param name="configuration">The configuration.</param>
         void ISupportsInitialize.Initialize(LoggingConfiguration configuration)
         {
-            this.Initialize(configuration);
+            lock (this.SyncRoot)
+            { 
+                bool wasInitialized = this.isInitialized;
+                this.Initialize(configuration);
+                if (wasInitialized && configuration != null)
+                {
+                    FindAllLayouts();
+                }
+            }
         }
 
         /// <summary>
@@ -128,15 +156,16 @@ namespace NLog.Targets
                 throw new ArgumentNullException("asyncContinuation");
             }
 
+            asyncContinuation = AsyncHelpers.PreventMultipleCalls(asyncContinuation);
+
             lock (this.SyncRoot)
             {
                 if (!this.IsInitialized)
                 {
+                    // In case target was Closed
                     asyncContinuation(null);
                     return;
                 }
-
-                asyncContinuation = AsyncHelpers.PreventMultipleCalls(asyncContinuation);
 
                 try
                 {
@@ -157,21 +186,40 @@ namespace NLog.Targets
         /// <summary>
         /// Calls the <see cref="Layout.Precalculate"/> on each volatile layout
         /// used by this target.
+        /// This method won't prerender if all layouts in this target are thread-agnostic.
         /// </summary>
         /// <param name="logEvent">
         /// The log event.
         /// </param>
         public void PrecalculateVolatileLayouts(LogEventInfo logEvent)
         {
+            if (this.allLayoutsAreThreadAgnostic)
+                return;
+
+            // Not all Layouts support concurrent threads, so we have to protect them
             lock (this.SyncRoot)
             {
-                if (this.IsInitialized)
+                if (!this.isInitialized)
+                    return;
+
+                if (this.allLayouts != null)
                 {
-                    if (this.allLayouts != null)
+                    if (this.OptimizeBufferReuse)
                     {
-                        foreach (Layout l in this.allLayouts)
+                        using (var targetBuilder = this.ReusableLayoutBuilder.Allocate())
                         {
-                            l.Precalculate(logEvent);
+                            foreach (Layout layout in this.allLayouts)
+                            {
+                                targetBuilder.Result.ClearBuilder();
+                                layout.PrecalculateBuilder(logEvent, targetBuilder.Result);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        foreach (Layout layout in this.allLayouts)
+                        {
+                            layout.Precalculate(logEvent);
                         }
                     }
                 }
@@ -201,36 +249,27 @@ namespace NLog.Targets
         /// <param name="logEvent">Log event to write.</param>
         public void WriteAsyncLogEvent(AsyncLogEventInfo logEvent)
         {
-            lock (this.SyncRoot)
+            if (!this.IsInitialized)
             {
-                if (!this.IsInitialized)
+                lock (this.SyncRoot)
                 {
                     logEvent.Continuation(null);
-                    return;
                 }
+                return;
+            }
 
-                if (this.initializeException != null)
+            if (this.initializeException != null)
+            {
+                lock (this.SyncRoot)
                 {
                     logEvent.Continuation(this.CreateInitException());
-                    return;
                 }
-
-                var wrappedContinuation = AsyncHelpers.PreventMultipleCalls(logEvent.Continuation);
-
-                try
-                {
-                    this.Write(logEvent.LogEvent.WithContinuation(wrappedContinuation));
-                }
-                catch (Exception exception)
-                {
-                    if (exception.MustBeRethrown())
-                    {
-                        throw;
-                    }
-
-                    wrappedContinuation(exception);
-                }
+                return;
             }
+
+            var wrappedContinuation = AsyncHelpers.PreventMultipleCalls(logEvent.Continuation);
+            var wrappedLogEvent = logEvent.LogEvent.WithContinuation(wrappedContinuation);
+            this.WriteAsyncThreadSafe(wrappedLogEvent);
         }
 
         /// <summary>
@@ -244,52 +283,65 @@ namespace NLog.Targets
                 return;
             }
 
-            lock (this.SyncRoot)
+            WriteAsyncLogEvents((IList<AsyncLogEventInfo>)logEvents);
+        }
+
+        /// <summary>
+        /// Writes the array of log events.
+        /// </summary>
+        /// <param name="logEvents">The log events.</param>
+        internal void WriteAsyncLogEvents(IList<AsyncLogEventInfo> logEvents)
+        {
+            if (logEvents == null || logEvents.Count == 0)
             {
-                if (!this.IsInitialized)
-                {
-                    foreach (var ev in logEvents)
-                    {
-                        ev.Continuation(null);
-                    }
-
-                    return;
-                }
-
-                if (this.initializeException != null)
-                {
-                    foreach (var ev in logEvents)
-                    {
-                        ev.Continuation(this.CreateInitException());
-                    }
-
-                    return;
-                }
-
-                var wrappedEvents = new AsyncLogEventInfo[logEvents.Length];
-                for (int i = 0; i < logEvents.Length; ++i)
-                {
-                    wrappedEvents[i] = logEvents[i].LogEvent.WithContinuation(AsyncHelpers.PreventMultipleCalls(logEvents[i].Continuation));
-                }
-
-                try
-                {
-                    this.Write(wrappedEvents);
-                }
-                catch (Exception exception)
-                {
-                    if (exception.MustBeRethrown())
-                    {
-                        throw;
-                    }
-
-                    // in case of synchronous failure, assume that nothing is running asynchronously
-                    foreach (var ev in wrappedEvents)
-                    {
-                        ev.Continuation(exception);
-                    }
-                }
+                return;
             }
+
+            if (!this.IsInitialized)
+            {
+                lock (this.SyncRoot)
+                {
+                    for (int i = 0; i < logEvents.Count; ++i)
+                    {
+                        logEvents[i].Continuation(null);
+                    }
+                }
+                return;
+            }
+
+            if (this.initializeException != null)
+            {
+                lock (this.SyncRoot)
+                {
+                    for (int i = 0; i < logEvents.Count; ++i)
+                    {
+                        logEvents[i].Continuation(this.CreateInitException());
+                    }
+                }
+                return;
+            }
+
+            IList<AsyncLogEventInfo> wrappedEvents;
+            if (this.OptimizeBufferReuse)
+            {
+                for (int i = 0; i < logEvents.Count; ++i)
+                {
+                    logEvents[i] = logEvents[i].LogEvent.WithContinuation(AsyncHelpers.PreventMultipleCalls(logEvents[i].Continuation));
+                }
+                wrappedEvents = logEvents;
+            }
+            else
+            {
+                var cloneLogEvents = new AsyncLogEventInfo[logEvents.Count];
+                for (int i = 0; i < logEvents.Count; ++i)
+                {
+                    AsyncLogEventInfo ev = logEvents[i];
+                    cloneLogEvents[i] = ev.LogEvent.WithContinuation(AsyncHelpers.PreventMultipleCalls(ev.Continuation));
+                }
+                wrappedEvents = cloneLogEvents;
+            }
+
+            this.WriteAsyncThreadSafe(wrappedEvents);
         }
 
         /// <summary>
@@ -305,7 +357,6 @@ namespace NLog.Targets
                 if (!this.IsInitialized)
                 {
                     PropertyHelper.CheckRequiredParameters(this);
-                    this.IsInitialized = true;
                     try
                     {
                         this.InitializeTarget();
@@ -327,7 +378,10 @@ namespace NLog.Targets
                         {
                             throw;
                         }
-
+                    }
+                    finally
+                    {
+                        this.isInitialized = true;
                     }
                 }
             }
@@ -344,14 +398,16 @@ namespace NLog.Targets
 
                 if (this.IsInitialized)
                 {
-                    this.IsInitialized = false;
+                    this.isInitialized = false;
 
                     try
                     {
                         if (this.initializeException == null)
                         {
                             // if Init succeeded, call Close()
+                            InternalLogger.Debug("Closing target '{0}'.", this);
                             this.CloseTarget();
+                            InternalLogger.Debug("Closed target '{0}'.", this);
                         }
                     }
                     catch (Exception exception)
@@ -367,35 +423,6 @@ namespace NLog.Targets
             }
         }
 
-        internal void WriteAsyncLogEvents(AsyncLogEventInfo[] logEventInfos, AsyncContinuation continuation)
-        {
-            if (logEventInfos.Length == 0)
-            {
-                continuation(null);
-            }
-            else
-            {
-                var wrappedLogEventInfos = new AsyncLogEventInfo[logEventInfos.Length];
-                int remaining = logEventInfos.Length;
-                for (int i = 0; i < logEventInfos.Length; ++i)
-                {
-                    AsyncContinuation originalContinuation = logEventInfos[i].Continuation;
-                    AsyncContinuation wrappedContinuation = ex =>
-                                                                {
-                                                                    originalContinuation(ex);
-                                                                    if (0 == Interlocked.Decrement(ref remaining))
-                                                                    {
-                                                                        continuation(null);
-                                                                    }
-                                                                };
-
-                    wrappedLogEventInfos[i] = logEventInfos[i].LogEvent.WithContinuation(wrappedContinuation);
-                }
-
-                this.WriteAsyncLogEvents(wrappedLogEventInfos);
-            }
-        }
-
         /// <summary>
         /// Releases unmanaged and - optionally - managed resources.
         /// </summary>
@@ -404,7 +431,14 @@ namespace NLog.Targets
         {
             if (disposing)
             {
-                this.CloseTarget();
+                if (this.isInitialized)
+                {
+                    this.isInitialized = false;
+                    if (this.initializeException == null)
+                    {
+                        this.CloseTarget();
+                    }
+                }
             }
         }
 
@@ -420,8 +454,10 @@ namespace NLog.Targets
 
         private void FindAllLayouts()
         {
-            this.allLayouts = new List<Layout>(ObjectGraphScanner.FindReachableObjects<Layout>(this));
+            this.allLayouts = ObjectGraphScanner.FindReachableObjects<Layout>(this);
             InternalLogger.Trace("{0} has {1} layouts", this, this.allLayouts.Count);
+            this.allLayoutsAreThreadAgnostic = allLayouts.All(layout => layout.ThreadAgnostic);
+            this.StackTraceUsage = allLayouts.DefaultIfEmpty().Max(layout => layout == null ? StackTraceUsage.None : layout.StackTraceUsage);
             this.scannedForLayouts = true;
         }
 
@@ -442,22 +478,19 @@ namespace NLog.Targets
         }
 
         /// <summary>
-        /// Writes logging event to the log target.
+        /// Writes logging event to the log target. Must be overridden in inheriting
         /// classes.
         /// </summary>
-        /// <param name="logEvent">
-        /// Logging event to be written out.
-        /// </param>
+        /// <param name="logEvent">Logging event to be written out.</param>
         protected virtual void Write(LogEventInfo logEvent)
         {
-            // do nothing
+            // Override to perform the actual write-operation
         }
 
         /// <summary>
-        /// Writes log event to the log target. Must be overridden in inheriting
-        /// classes.
+        /// Writes async log event to the log target.
         /// </summary>
-        /// <param name="logEvent">Log event to be written out.</param>
+        /// <param name="logEvent">Async Log event to be written out.</param>
         protected virtual void Write(AsyncLogEventInfo logEvent)
         {
             try
@@ -479,16 +512,122 @@ namespace NLog.Targets
         }
 
         /// <summary>
+        /// Writes a log event to the log target, in a thread safe manner.
+        /// </summary>
+        /// <param name="logEvent">Log event to be written out.</param>
+        protected virtual void WriteAsyncThreadSafe(AsyncLogEventInfo logEvent)
+        {
+            lock (this.SyncRoot)
+            {
+                if (!this.IsInitialized)
+                {
+                    // In case target was Closed
+                    logEvent.Continuation(null);
+                    return;
+                }
+
+                try
+                {
+                    this.Write(logEvent);
+                }
+                catch (Exception exception)
+                {
+                    if (exception.MustBeRethrown())
+                    {
+                        throw;
+                    }
+
+                    logEvent.Continuation(exception);
+                }
+            }
+        }
+
+        /// <summary>
+        /// NOTE! Obsolete, instead override Write(IList{AsyncLogEventInfo} logEvents)
+        /// 
         /// Writes an array of logging events to the log target. By default it iterates on all
         /// events and passes them to "Write" method. Inheriting classes can use this method to
         /// optimize batch writes.
         /// </summary>
         /// <param name="logEvents">Logging events to be written out.</param>
+        [Obsolete("Instead override Write(IList<AsyncLogEventInfo> logEvents. Marked obsolete on NLog 4.5")]
         protected virtual void Write(AsyncLogEventInfo[] logEvents)
         {
-            for (int i = 0; i < logEvents.Length; ++i)
+            Write((IList<AsyncLogEventInfo>)logEvents);
+        }
+
+        /// <summary>
+        /// Writes an array of logging events to the log target. By default it iterates on all
+        /// events and passes them to "Write" method. Inheriting classes can use this method to
+        /// optimize batch writes.
+        /// </summary>
+        /// <param name="logEvents">Logging events to be written out.</param>
+        protected virtual void Write(IList<AsyncLogEventInfo> logEvents)
+        {
+            for (int i = 0; i < logEvents.Count; ++i)
             {
                 this.Write(logEvents[i]);
+            }
+        }
+
+        /// <summary>
+        /// NOTE! Obsolete, instead override WriteAsyncThreadSafe(IList{AsyncLogEventInfo} logEvents)
+        /// 
+        /// Writes an array of logging events to the log target, in a thread safe manner.
+        /// </summary>
+        /// <param name="logEvents">Logging events to be written out.</param>
+        [Obsolete("Instead override WriteAsyncThreadSafe(IList<AsyncLogEventInfo> logEvents. Marked obsolete on NLog 4.5")]
+        protected virtual void WriteAsyncThreadSafe(AsyncLogEventInfo[] logEvents)
+        {
+            WriteAsyncThreadSafe((IList<AsyncLogEventInfo>)logEvents);
+        }
+
+        /// <summary>
+        /// Writes an array of logging events to the log target, in a thread safe manner.
+        /// </summary>
+        /// <param name="logEvents">Logging events to be written out.</param>
+        protected virtual void WriteAsyncThreadSafe(IList<AsyncLogEventInfo> logEvents)
+        {
+            lock (this.SyncRoot)
+            {
+                if (!this.IsInitialized)
+                {
+                    // In case target was Closed
+                    for (int i = 0; i < logEvents.Count; ++i)
+                    {
+                        logEvents[i].Continuation(null);
+                    }
+                    return;
+                }
+
+                try
+                {
+                    AsyncLogEventInfo[] logEventsArray = this.OptimizeBufferReuse ? null : logEvents as AsyncLogEventInfo[];
+                    if (!this.OptimizeBufferReuse && logEventsArray != null)
+                    {
+                        // Backwards compatibility
+#pragma warning disable 612, 618
+                        this.Write(logEventsArray);
+#pragma warning restore 612, 618
+                    }
+                    else
+                    {
+                        this.Write(logEvents);
+                    }
+                }
+                catch (Exception exception)
+                {
+                    if (exception.MustBeRethrown())
+                    {
+                        throw;
+                    }
+
+                    // in case of synchronous failure, assume that nothing is running asynchronously
+                    for (int i = 0; i < logEvents.Count; ++i)
+                    {
+                        logEvents[i].Continuation(exception);
+                    }
+                }
             }
         }
 
@@ -504,15 +643,17 @@ namespace NLog.Targets
         /// <param name="logEvent">The event info object to perform the merge to.</param>
         protected void MergeEventProperties(LogEventInfo logEvent)
         {
-            if (logEvent.Parameters == null)
+            if (logEvent.Parameters == null || logEvent.Parameters.Length == 0)
             {
                 return;
             }
 
-            foreach (var item in logEvent.Parameters)
+            //Memory profiling pointed out that using a foreach-loop was allocating
+            //an Enumerator. Switching to a for-loop avoids the memory allocation.
+            for (int i = 0; i < logEvent.Parameters.Length; ++i)
             {
-                var logEventParameter = item as LogEventInfo;
-                if (logEventParameter != null)
+                var logEventParameter = logEvent.Parameters[i] as LogEventInfo;
+                if (logEventParameter != null && logEventParameter.HasProperties)
                 {
                     foreach (var key in logEventParameter.Properties.Keys)
                     {
@@ -521,6 +662,56 @@ namespace NLog.Targets
                     logEventParameter.Properties.Clear();
                 }
             }
+        }
+
+        /// <summary>
+        /// Renders the event info in layout.
+        /// </summary>
+        /// <param name="layout">The layout.</param>
+        /// <param name="logEvent">The event info.</param>
+        /// <returns>String representing log event.</returns>
+        protected string RenderLogEvent(Layout layout, LogEventInfo logEvent)
+        {
+            if (OptimizeBufferReuse)
+            {
+                SimpleLayout simpleLayout = layout as SimpleLayout;
+                if (simpleLayout != null && simpleLayout.IsFixedText)
+                    return simpleLayout.Render(logEvent);
+
+                using (var localTarget = ReusableLayoutBuilder.Allocate())
+                {
+                    return layout.RenderAllocateBuilder(logEvent, localTarget.Result, false);
+                }
+            }
+            else
+            {
+                return layout.Render(logEvent);
+            }
+        }
+
+        /// <summary>
+        /// Register a custom Target.
+        /// </summary>
+        /// <remarks>Short-cut for registing to default <see cref="ConfigurationItemFactory"/></remarks>
+        /// <typeparam name="T"> Type of the Target.</typeparam>
+        /// <param name="name"> Name of the Target.</param>
+        public static void Register<T>(string name)
+            where T : Target
+        {
+            var layoutRendererType = typeof(T);
+            Register(name, layoutRendererType);
+        }
+
+        /// <summary>
+        /// Register a custom Target.
+        /// </summary>
+        /// <remarks>Short-cut for registing to default <see cref="ConfigurationItemFactory"/></remarks>
+        /// <param name="targetType"> Type of the Target.</param>
+        /// <param name="name"> Name of the Target.</param>
+        public static void Register(string name, Type targetType)
+        {
+            ConfigurationItemFactory.Default.Targets
+                .RegisterDefinition(name, targetType);
         }
     }
 }

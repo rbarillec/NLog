@@ -38,13 +38,12 @@ using System.Linq;
 using Xunit;
 using NLog.Common;
 using System.Text;
-#if !SILVERLIGHT 
+using NLog.Time;
 using Xunit.Extensions;
-#endif
 
 namespace NLog.UnitTests.Common
 {
-    public class InternalLoggerTests : NLogTestBase
+    public class InternalLoggerTests : NLogTestBase, IDisposable
     {
         /// <summary>
         /// Test the return values of all Is[Level]Enabled() methods.
@@ -128,6 +127,26 @@ namespace NLog.UnitTests.Common
 
                 TestWriter(expected, writer2);
             }
+            {
+                //
+                // Reconfigure the LogWriter.
+
+                StringWriter writer2 = new StringWriter()
+                {
+                    NewLine = "\n"
+                };
+                InternalLogger.LogWriter = writer2;
+
+                // Invoke Log(LogLevel, string) for every log level.
+                InternalLogger.Log(LogLevel.Warn, () => "WWW");
+                InternalLogger.Log(LogLevel.Error, () => "EEE");
+                InternalLogger.Log(LogLevel.Fatal, () => "FFF");
+                InternalLogger.Log(LogLevel.Trace, () => "TTT");
+                InternalLogger.Log(LogLevel.Debug, () => "DDD");
+                InternalLogger.Log(LogLevel.Info, () => "III");
+
+                TestWriter(expected, writer2);
+            }
         }
 
 
@@ -190,7 +209,6 @@ namespace NLog.UnitTests.Common
             Assert.Equal(expected, writerOutput);
         }
 
-#if !SILVERLIGHT
         [Fact]
         public void WriteToConsoleOutTests()
         {
@@ -239,6 +257,27 @@ namespace NLog.UnitTests.Common
                 InternalLogger.Log(LogLevel.Info, "III");
 
                 TestWriter(expected, consoleOutWriter2);
+            }
+
+            //lambdas
+            {
+                StringWriter consoleOutWriter1 = new StringWriter()
+                {
+                    NewLine = "\n"
+                };
+
+                // Redirect the console output to a StringWriter.
+                Console.SetOut(consoleOutWriter1);
+
+                // Named (based on LogLevel) public methods.
+                InternalLogger.Warn(() => "WWW");
+                InternalLogger.Error(() => "EEE");
+                InternalLogger.Fatal(() => "FFF");
+                InternalLogger.Trace(() => "TTT");
+                InternalLogger.Debug(() => "DDD");
+                InternalLogger.Info(() => "III");
+
+                TestWriter(expected, consoleOutWriter1);
             }
         }
 
@@ -332,6 +371,28 @@ namespace NLog.UnitTests.Common
             }
         }
 
+        /// <summary>
+        /// <see cref="TimeSource"/> that returns always the same time,
+        /// passed into object constructor.
+        /// </summary>
+        private class FixedTimeSource : TimeSource
+        {
+            private readonly DateTime _time;
+
+            public FixedTimeSource(DateTime time)
+            {
+                _time = time;
+            }
+
+            public override DateTime Time { get { return _time; } }
+
+            public override DateTime FromSystemTime(DateTime systemTime)
+            {
+                return _time;
+            }
+        }
+
+
         [Fact]
         public void TimestampTests()
         {
@@ -347,6 +408,9 @@ namespace NLog.UnitTests.Common
             // Redirect the console output to a StringWriter.
             Console.SetOut(consoleOutWriter);
 
+            // Set fixed time source to test time output
+            TimeSource.Current = new FixedTimeSource(DateTime.Now);
+
             // Named (based on LogLevel) public methods.
             InternalLogger.Warn("WWW");
             InternalLogger.Error("EEE");
@@ -355,7 +419,7 @@ namespace NLog.UnitTests.Common
             InternalLogger.Debug("DDD");
             InternalLogger.Info("III");
 
-            string expectedDateTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            string expectedDateTime = TimeSource.Current.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
             var strings = consoleOutWriter.ToString().Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries);
             foreach (var str in strings)
@@ -393,28 +457,196 @@ namespace NLog.UnitTests.Common
                     "Debug DDD" + prefix + ex5 + Environment.NewLine +
                     "Info III" + Environment.NewLine;
 
-                StringWriter consoleOutWriter = new StringWriter()
+
                 {
-                    NewLine = Environment.NewLine
-                };
+                    StringWriter consoleOutWriter = new StringWriter()
+                    {
+                        NewLine = Environment.NewLine
+                    };
 
-                // Redirect the console output to a StringWriter.
-                Console.SetOut(consoleOutWriter);
+                    // Redirect the console output to a StringWriter.
+                    Console.SetOut(consoleOutWriter);
 
-                // Named (based on LogLevel) public methods.
+                    // Named (based on LogLevel) public methods.
 
-                InternalLogger.Warn(ex1, "WWW");
-                InternalLogger.Error(ex2, "EEE");
-                InternalLogger.Fatal(ex3, "FFF");
-                InternalLogger.Trace(ex4, "TTT");
-                InternalLogger.Debug(ex5, "DDD");
-                InternalLogger.Info(ex6, "III");
+                    InternalLogger.Warn(ex1, "WWW");
+                    InternalLogger.Error(ex2, "EEE");
+                    InternalLogger.Fatal(ex3, "FFF");
+                    InternalLogger.Trace(ex4, "TTT");
+                    InternalLogger.Debug(ex5, "DDD");
+                    InternalLogger.Info(ex6, "III");
 
-                consoleOutWriter.Flush();
-                var strings = consoleOutWriter.ToString();
-                Assert.Equal(expected, strings);
+                    consoleOutWriter.Flush();
+                    var strings = consoleOutWriter.ToString();
+                    Assert.Equal(expected, strings);
+                }
+                {
+                    StringWriter consoleOutWriter = new StringWriter()
+                    {
+                        NewLine = Environment.NewLine
+                    };
+
+                    // Redirect the console output to a StringWriter.
+                    Console.SetOut(consoleOutWriter);
+
+                    // Named (based on LogLevel) public methods.
+
+                    InternalLogger.Warn(ex1, () => "WWW");
+                    InternalLogger.Error(ex2, () => "EEE");
+                    InternalLogger.Fatal(ex3, () => "FFF");
+                    InternalLogger.Trace(ex4, () => "TTT");
+                    InternalLogger.Debug(ex5, () => "DDD");
+                    InternalLogger.Info(ex6, () => "III");
+
+                    consoleOutWriter.Flush();
+                    var strings = consoleOutWriter.ToString();
+                    Assert.Equal(expected, strings);
+                }
+                {
+                    StringWriter consoleOutWriter = new StringWriter()
+                    {
+                        NewLine = Environment.NewLine
+                    };
+
+                    // Redirect the console output to a StringWriter.
+                    Console.SetOut(consoleOutWriter);
+
+                    // Named (based on LogLevel) public methods.
+
+                    InternalLogger.Log(ex1, LogLevel.Warn, "WWW");
+                    InternalLogger.Log(ex2, LogLevel.Error, "EEE");
+                    InternalLogger.Log(ex3, LogLevel.Fatal, "FFF");
+                    InternalLogger.Log(ex4, LogLevel.Trace, "TTT");
+                    InternalLogger.Log(ex5, LogLevel.Debug, "DDD");
+                    InternalLogger.Log(ex6, LogLevel.Info, "III");
+
+                    consoleOutWriter.Flush();
+                    var strings = consoleOutWriter.ToString();
+                    Assert.Equal(expected, strings);
+                }
+                {
+                    StringWriter consoleOutWriter = new StringWriter()
+                    {
+                        NewLine = Environment.NewLine
+                    };
+
+                    // Redirect the console output to a StringWriter.
+                    Console.SetOut(consoleOutWriter);
+
+                    // Named (based on LogLevel) public methods.
+
+                    InternalLogger.Log(ex1, LogLevel.Warn, () => "WWW");
+                    InternalLogger.Log(ex2, LogLevel.Error, () => "EEE");
+                    InternalLogger.Log(ex3, LogLevel.Fatal, () => "FFF");
+                    InternalLogger.Log(ex4, LogLevel.Trace, () => "TTT");
+                    InternalLogger.Log(ex5, LogLevel.Debug, () => "DDD");
+                    InternalLogger.Log(ex6, LogLevel.Info, () => "III");
+
+                    consoleOutWriter.Flush();
+                    var strings = consoleOutWriter.ToString();
+                    Assert.Equal(expected, strings);
+                }
             }
 
+        }
+
+        [Theory]
+        [InlineData("trace", 6)]
+        [InlineData("debug", 5)]
+        [InlineData("info", 4)]
+        [InlineData("warn", 3)]
+        [InlineData("error", 2)]
+        [InlineData("fatal", 1)]
+        [InlineData("off", 0)]
+        public void TestMinLevelSwitch_log(string rawLogLevel, int count)
+        {
+            Action log = () =>
+            {
+                InternalLogger.Log(LogLevel.Fatal, "L1");
+                InternalLogger.Log(LogLevel.Error, "L2");
+                InternalLogger.Log(LogLevel.Warn, "L3");
+                InternalLogger.Log(LogLevel.Info, "L4");
+                InternalLogger.Log(LogLevel.Debug, "L5");
+                InternalLogger.Log(LogLevel.Trace, "L6");
+            };
+
+            TestMinLevelSwitch_inner(rawLogLevel, count, log);
+        }
+
+        [Theory]
+        [InlineData("trace", 6)]
+        [InlineData("debug", 5)]
+        [InlineData("info", 4)]
+        [InlineData("warn", 3)]
+        [InlineData("error", 2)]
+        [InlineData("fatal", 1)]
+        [InlineData("off", 0)]
+        public void TestMinLevelSwitch(string rawLogLevel, int count)
+        {
+            Action log = () =>
+            {
+                InternalLogger.Fatal("L1");
+                InternalLogger.Error("L2");
+                InternalLogger.Warn("L3");
+                InternalLogger.Info("L4");
+                InternalLogger.Debug("L5");
+                InternalLogger.Trace("L6");
+            };
+
+            TestMinLevelSwitch_inner(rawLogLevel, count, log);
+        }
+
+        [Theory]
+        [InlineData("trace", 6)]
+        [InlineData("debug", 5)]
+        [InlineData("info", 4)]
+        [InlineData("warn", 3)]
+        [InlineData("error", 2)]
+        [InlineData("fatal", 1)]
+        [InlineData("off", 0)]
+        public void TestMinLevelSwitch_lambda(string rawLogLevel, int count)
+        {
+            Action log = () =>
+            {
+                InternalLogger.Fatal(()=>"L1");
+                InternalLogger.Error(() => "L2");
+                InternalLogger.Warn(() => "L3");
+                InternalLogger.Info(() => "L4");
+                InternalLogger.Debug(() => "L5");
+                InternalLogger.Trace(() => "L6");
+            };
+
+            TestMinLevelSwitch_inner(rawLogLevel, count, log);
+        }
+
+        private static void TestMinLevelSwitch_inner(string rawLogLevel, int count, Action log)
+        {
+            //set minimal
+            InternalLogger.LogLevel = LogLevel.FromString(rawLogLevel);
+            InternalLogger.IncludeTimestamp = false;
+
+            StringWriter consoleOutWriter = new StringWriter()
+            {
+                NewLine = ";"
+            };
+
+            InternalLogger.LogWriter = consoleOutWriter;
+
+            // Redirect the console output to a StringWriter.
+            Console.SetOut(consoleOutWriter);
+
+            var expected = "";
+            var logLevel = LogLevel.Fatal.Ordinal;
+            for (int i = 0; i < count; i++, logLevel--)
+            {
+                expected += LogLevel.FromOrdinal(logLevel) + " L" + (i + 1) + ";";
+            }
+
+            log();
+
+            consoleOutWriter.Flush();
+            var strings = consoleOutWriter.ToString();
+            Assert.Equal(expected, strings);
         }
 
         [Theory]
@@ -515,6 +747,10 @@ namespace NLog.UnitTests.Common
                 }
             }
         }
-#endif
+
+        public void Dispose()
+        {
+            TimeSource.Current = new FastLocalTimeSource();
+        }
     }
 }

@@ -42,11 +42,13 @@ using NLog.UnitTests.Targets.Wrappers;
 
 
 
-#if !SILVERLIGHT
+
+
 
 #if !NET3_5 && !NET4_0
 using System.Threading.Tasks;
 #endif
+
 
 namespace NLog.UnitTests.LayoutRenderers
 {
@@ -322,5 +324,3 @@ namespace NLog.UnitTests.LayoutRenderers
         }
     }
 }
-
-#endif

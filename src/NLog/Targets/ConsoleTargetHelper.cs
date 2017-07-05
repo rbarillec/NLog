@@ -33,6 +33,7 @@
 
 using System;
 using System.IO;
+using System.Text;
 using NLog.Common;
 
 namespace NLog.Targets
@@ -41,11 +42,15 @@ namespace NLog.Targets
     {
         public static bool IsConsoleAvailable(out string reason)
         {
+            reason = string.Empty;
 #if !SILVERLIGHT && !__IOS__ && !__ANDROID__ && !MONO
             try
             {
                 if (!Environment.UserInteractive)
                 {
+                    if (Internal.PlatformDetector.IsMono && Console.In is StreamReader)
+                        return true;    // Extra bonus check for Mono, that doesn't support Environment.UserInteractive
+
                     reason = "Environment.UserInteractive = False";
                     return false;
                 }
@@ -62,8 +67,38 @@ namespace NLog.Targets
                 return false;
             }
 #endif
-            reason = string.Empty;
             return true;
+        }
+
+        public static Encoding GetConsoleOutputEncoding(Encoding currentEncoding, bool isInitialized, bool pauseLogging)
+        {
+#if !SILVERLIGHT && !__IOS__ && !__ANDROID__
+            string reason;
+            if (currentEncoding != null)
+                return currentEncoding;
+            else if ((isInitialized && !pauseLogging) || IsConsoleAvailable(out reason))
+                return Console.OutputEncoding;
+            else
+                return Encoding.Default;    // No console available
+#else
+            return currentEncoding;
+#endif
+        }
+
+        public static bool SetConsoleOutputEncoding(Encoding newEncoding, bool isInitialized, bool pauseLogging)
+        {
+#if !SILVERLIGHT && !__IOS__ && !__ANDROID__
+            if (!isInitialized)
+            {
+                return true;    // Waiting for console target to be initialized
+            }
+            else if (!pauseLogging)
+            {
+                Console.OutputEncoding = newEncoding;   // Can throw exception if console is not availabe
+                return true;
+            }
+#endif
+            return false;       // No console available
         }
     }
 }

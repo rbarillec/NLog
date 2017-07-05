@@ -339,16 +339,31 @@ namespace NLog.Targets
         /// <param name="logEvent">The logging event.</param>
         protected override void Write(AsyncLogEventInfo logEvent)
         {
-            this.Write(new[] { logEvent });
+            this.Write((IList<AsyncLogEventInfo>)new[] { logEvent });
+        }
+
+        /// <summary>
+        /// NOTE! Obsolete, instead override Write(IList{AsyncLogEventInfo} logEvents)
+        /// 
+        /// Writes an array of logging events to the log target. By default it iterates on all
+        /// events and passes them to "Write" method. Inheriting classes can use this method to
+        /// optimize batch writes.
+        /// </summary>
+        /// <param name="logEvents">Logging events to be written out.</param>
+        [Obsolete("Instead override Write(IList<AsyncLogEventInfo> logEvents. Marked obsolete on NLog 4.5")]
+        protected override void Write(AsyncLogEventInfo[] logEvents)
+        {
+            Write((IList<AsyncLogEventInfo>)logEvents);
         }
 
         /// <summary>
         /// Renders an array logging events.
         /// </summary>
         /// <param name="logEvents">Array of logging events.</param>
-        protected override void Write(AsyncLogEventInfo[] logEvents)
+        protected override void Write(IList<AsyncLogEventInfo> logEvents)
         {
-            foreach (var bucket in logEvents.BucketSort(c => this.GetSmtpSettingsKey(c.LogEvent)))
+            var buckets = logEvents.BucketSort(c => this.GetSmtpSettingsKey(c.LogEvent));
+            foreach (var bucket in buckets)
             {
                 var eventInfos = bucket.Value;
                 this.ProcessSingleMailMessage(eventInfos);
@@ -372,9 +387,8 @@ namespace NLog.Targets
         /// Create mail and send with SMTP
         /// </summary>
         /// <param name="events">event printed in the body of the event</param>
-        private void ProcessSingleMailMessage([NotNull] List<AsyncLogEventInfo> events)
+        private void ProcessSingleMailMessage([NotNull] IList<AsyncLogEventInfo> events)
         {
-
             try
             {
                 if (events.Count == 0)

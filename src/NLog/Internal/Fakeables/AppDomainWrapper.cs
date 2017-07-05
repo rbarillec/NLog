@@ -35,12 +35,17 @@ namespace NLog.Internal.Fakeables
 {
     using System;
     using System.Collections.Generic;
+    using NLog.Common;
 
     /// <summary>
     /// Adapter for <see cref="AppDomain"/> to <see cref="IAppDomain"/>
     /// </summary>
     public class AppDomainWrapper : IAppDomain
     {
+#if !SILVERLIGHT
+        private readonly AppDomain currentAppDomain;
+#endif
+
         /// <summary>
         /// Initializes a new instance of the <see cref="AppDomainWrapper"/> class.
         /// </summary>
@@ -48,21 +53,33 @@ namespace NLog.Internal.Fakeables
         public AppDomainWrapper(AppDomain appDomain)
         {
 #if !SILVERLIGHT
-            BaseDirectory = appDomain.BaseDirectory;
-            ConfigurationFile = appDomain.SetupInformation.ConfigurationFile;
+            currentAppDomain = appDomain;
+            try
+            {
+                BaseDirectory = appDomain.BaseDirectory;
+            }
+            catch (System.Security.SecurityException ex)
+            {
+                InternalLogger.Warn(ex, "AppDomain.BaseDirectory Failed");
+                BaseDirectory = string.Empty;
+            }
+            try
+            {
+                ConfigurationFile = appDomain.SetupInformation.ConfigurationFile;
+            }
+            catch (System.Security.SecurityException ex)
+            {
+                InternalLogger.Warn(ex, "AppDomain.SetupInformation.ConfigurationFile Failed");
+                ConfigurationFile = string.Empty;
+            }
 
             string privateBinPath = appDomain.SetupInformation.PrivateBinPath;
             PrivateBinPath = string.IsNullOrEmpty(privateBinPath)
-                                 ? new string[] {}
+                                 ? ArrayHelper.Empty<string>()
                                  : appDomain.SetupInformation.PrivateBinPath.Split(new[] {';'},
                                                                                    StringSplitOptions.RemoveEmptyEntries);
             FriendlyName = appDomain.FriendlyName;
             Id = appDomain.Id;
-            
-#endif
-#if !SILVERLIGHT
-            appDomain.ProcessExit += OnProcessExit;
-            appDomain.DomainUnload += OnDomainUnload;
 #endif
         }
 
@@ -71,7 +88,6 @@ namespace NLog.Internal.Fakeables
         /// </summary>
         public static AppDomainWrapper CurrentDomain { get { return new AppDomainWrapper(AppDomain.CurrentDomain); } }
 
-#if !SILVERLIGHT
         /// <summary>
         /// Gets or sets the base directory that the assembly resolver uses to probe for assemblies.
         /// </summary>
@@ -96,30 +112,66 @@ namespace NLog.Internal.Fakeables
         /// Gets an integer that uniquely identifies the application domain within the process. 
         /// </summary>
         public int Id { get; private set; }
-#endif
 
-#if !SILVERLIGHT
         /// <summary>
         /// Process exit event.
         /// </summary>
-        public event EventHandler<EventArgs> ProcessExit;
+        public event EventHandler<EventArgs> ProcessExit
+        {
+            add
+            {
+#if !SILVERLIGHT
+                if (this.processExitEvent == null && this.currentAppDomain != null)
+                    this.currentAppDomain.ProcessExit += OnProcessExit;
+#endif
+                this.processExitEvent += value;
+            }
+            remove
+            {
+                this.processExitEvent -= value;
+#if !SILVERLIGHT
+                if (this.processExitEvent == null && this.currentAppDomain != null)
+                    this.currentAppDomain.ProcessExit -= OnProcessExit;
+#endif
+            }
+        }
+        private event EventHandler<EventArgs> processExitEvent;
 
         /// <summary>
         /// Domain unloaded event.
         /// </summary>
-        public event EventHandler<EventArgs> DomainUnload;
+        public event EventHandler<EventArgs> DomainUnload
+        {
+            add
+            {
+#if !SILVERLIGHT
+                if (this.domainUnloadEvent == null && this.currentAppDomain != null)
+                    this.currentAppDomain.DomainUnload += OnDomainUnload;
+#endif
+                this.domainUnloadEvent += value;
+
+            }
+            remove
+            {
+                this.domainUnloadEvent -= value;
+#if !SILVERLIGHT
+                if (this.domainUnloadEvent == null && this.currentAppDomain != null)
+                    this.currentAppDomain.DomainUnload -= OnDomainUnload;
+#endif
+            }
+        }
+        private event EventHandler<EventArgs> domainUnloadEvent;
 
         private void OnDomainUnload(object sender, EventArgs e)
         {
-            var handler = DomainUnload;
-            if (handler != null) handler(sender, e);
+            var handler = domainUnloadEvent;
+            if (handler != null) handler.Invoke(sender, e);
         }
 
         private void OnProcessExit(object sender, EventArgs eventArgs)
         {
-            var handler = ProcessExit;
-            if (handler != null) handler(sender, eventArgs);
+            var handler = processExitEvent;
+            if (handler != null) handler.Invoke(sender, eventArgs);
         }
-#endif
     }
 }
